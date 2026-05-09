@@ -3,8 +3,6 @@ from app.models.db_models import (
     BusinessStatus
 )
 
-from datetime import datetime, timedelta
-
 
 def classify_business_status(db, ubid):
 
@@ -16,35 +14,34 @@ def classify_business_status(db, ubid):
 
     if not signals:
         status = "Dormant"
-        confidence = 0.50
-        reason = "No recent activity signals"
+        confidence = 0.40
+        reason = "No activity signals found"
+
     else:
+        recent_signal_count = len(signals)
 
-        recent_count = 0
+        signal_types = [
+            s.signal_type for s in signals
+        ]
 
-        for s in signals:
-
-            days = (
-                datetime.utcnow() - s.created_at
-            ).days
-
-            if days <= 180:
-                recent_count += 1
-
-        if recent_count >= 3:
+        if (
+            "inspection" in signal_types or
+            "gst_filing" in signal_types or
+            "license_update" in signal_types
+        ):
             status = "Active"
-            confidence = 0.95
-            reason = "Multiple recent activity signals found"
+            confidence = 0.92
+            reason = "Recent compliance activity detected"
 
-        elif recent_count >= 1:
+        elif recent_signal_count >= 2:
             status = "Dormant"
-            confidence = 0.70
-            reason = "Limited recent activity found"
+            confidence = 0.60
+            reason = "Low business activity"
 
         else:
             status = "Closed"
             confidence = 0.85
-            reason = "No recent activity in long duration"
+            reason = "Very limited activity"
 
     existing = (
         db.query(BusinessStatus)
@@ -56,15 +53,21 @@ def classify_business_status(db, ubid):
         existing.status = status
         existing.confidence = confidence
         existing.reason = reason
-    else:
 
-        obj = BusinessStatus(
+    else:
+        new_status = BusinessStatus(
             ubid=ubid,
             status=status,
             confidence=confidence,
             reason=reason
         )
 
-        db.add(obj)
+        db.add(new_status)
 
     db.commit()
+
+    return {
+        "status": status,
+        "confidence": confidence,
+        "reason": reason
+    }

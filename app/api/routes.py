@@ -1,15 +1,19 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from app.models.db_models import BusinessStatus
 
 from app.db.postgres import SessionLocal
 
 from app.models.db_models import (
     BusinessRecord,
-    ReviewQueue
+    ReviewQueue,
+    ActivitySignal,
+    BusinessStatus
 )
 
 from app.services.matcher import compute_similarity
 from app.services.ubid_service import generate_new_ubid
+from app.services.status_service import classify_business_status
 
 router = APIRouter()
 
@@ -41,22 +45,46 @@ def get_all_records(db: Session = Depends(get_db)):
 
     records = db.query(BusinessRecord).all()
 
-    return [
-        {
-            "id": r.id,
-            "source": r.source,
-            "pan": r.pan,
-            "gstin": r.gstin,
-            "name": r.name,
-            "address": r.address,
-            "pincode": r.pincode,
-            "phone": r.phone,
-            "ubid": r.ubid,
-            "decision": r.decision,
-            "confidence": r.confidence_score
-        }
-        for r in records
-    ]
+    response = []
+
+    for r in records:
+
+        status_data = (
+            db.query(BusinessStatus)
+            .filter(BusinessStatus.ubid == r.ubid)
+            .first()
+        )
+
+        response.append(
+            {
+                "id": r.id,
+                "source": r.source,
+                "pan": r.pan,
+                "gstin": r.gstin,
+                "name": r.name,
+                "address": r.address,
+                "pincode": r.pincode,
+                "phone": r.phone,
+                "ubid": r.ubid,
+                "decision": r.decision,
+                "confidence": r.confidence_score,
+
+                # STATUS INFO
+                "business_status":
+                    status_data.status
+                    if status_data else "Unknown",
+
+                "status_confidence":
+                    status_data.confidence
+                    if status_data else 0,
+
+                "status_reason":
+                    status_data.reason
+                    if status_data else "No status available"
+            }
+        )
+
+    return response
 
 
 # =========================
@@ -96,30 +124,31 @@ def create_record(data: dict, db: Session = Depends(get_db)):
         best_score = 0
         best_match = None
         best_reasons = []
+        decision = "new_entity"
 
         # =========================
         # MATCHING
         # =========================
         for rec in existing_records:
 
-            score, reasons = compute_similarity(
+            score, decision_temp, reasons = compute_similarity(
                 new_record,
                 rec
             )
 
             if score > best_score:
+
                 best_score = score
                 best_match = rec
                 best_reasons = reasons
+                decision = decision_temp
 
         assigned_ubid = None
 
         # =========================
         # AUTO MERGE
         # =========================
-        if best_score >= 0.85 and best_match:
-
-            decision = "auto_merge"
+        if decision == "auto_merge" and best_match:
 
             if best_match.ubid:
 
@@ -136,9 +165,7 @@ def create_record(data: dict, db: Session = Depends(get_db)):
         # =========================
         # REVIEW
         # =========================
-        elif best_score >= 0.60 and best_match:
-
-            decision = "review"
+        elif decision == "review" and best_match:
 
             review = ReviewQueue(
                 record_id=new_record.id,
@@ -150,16 +177,62 @@ def create_record(data: dict, db: Session = Depends(get_db)):
 
             db.add(review)
 
+            assigned_ubid = generate_new_ubid(db)
+
+            new_record.ubid = assigned_ubid
+
         # =========================
         # NEW ENTITY
         # =========================
         else:
 
-            decision = "new_entity"
-
             assigned_ubid = generate_new_ubid(db)
 
             new_record.ubid = assigned_ubid
+
+        # =========================
+        # BUSINESS STATUS
+        # =========================
+        if decision == "new_entity":
+
+            business_status = "Active"
+
+        elif decision == "review":
+
+            business_status = "Dormant"
+
+        elif decision == "rejected_review":
+
+            business_status = "Closed"
+
+        elif decision == "approved_review":
+
+            business_status = "Active"
+
+        elif decision == "auto_merge":
+
+            business_status = "Active"
+
+        else:
+
+            business_status = "Active"
+
+        # =========================
+        # SAVE BUSINESS STATUS
+        # =========================
+        status_entry = BusinessStatus(
+
+            ubid=new_record.ubid,
+
+            status=business_status,
+
+            confidence=best_score,
+
+            reason="Automatically classified"
+
+        )
+
+        db.add(status_entry)
 
         # =========================
         # SAVE RESULTS
@@ -174,7 +247,8 @@ def create_record(data: dict, db: Session = Depends(get_db)):
             "decision": decision,
             "confidence": round(best_score, 2),
             "reasons": best_reasons,
-            "ubid": new_record.ubid
+            "ubid": new_record.ubid,
+            "business_status": business_status
         }
 
     except Exception as e:
@@ -335,3 +409,142 @@ def delete_record(
     return {
         "message": "Record deleted"
     }
+
+
+# =========================
+# ADD ACTIVITY SIGNAL
+# =========================
+@router.post("/activity/add")
+def add_activity_signal(
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+
+    signal = ActivitySignal(
+        ubid=payload["ubid"],
+        signal_type=payload["signal_type"],
+        signal_value=payload.get("signal_value"),
+        evidence=payload.get("evidence")
+    )
+
+    db.add(signal)
+    db.commit()
+
+    result = classify_business_status(
+        db,
+        payload["ubid"]
+    )
+
+    return {
+        "message": "Activity signal added",
+        "business_status": result
+    }
+
+
+# =========================
+# GET BUSINESS STATUS
+# =========================
+@router.get("/status/{ubid}")
+def get_business_status(
+    ubid: str,
+    db: Session = Depends(get_db)
+):
+
+    status = (
+        db.query(BusinessStatus)
+        .filter(BusinessStatus.ubid == ubid)
+        .first()
+    )
+
+    if not status:
+        return {
+            "message": "No status found"
+        }
+
+    return {
+        "ubid": status.ubid,
+        "status": status.status,
+        "confidence": status.confidence,
+        "reason": status.reason
+    }
+    
+
+@router.put("/records/status/{record_id}")
+def update_status(
+    record_id: int,
+    data: dict,
+    db: Session = Depends(get_db)
+):
+
+    try:
+
+        record = (
+            db.query(BusinessRecord)
+            .filter(BusinessRecord.id == record_id)
+            .first()
+        )
+
+        if not record:
+
+            return {
+                "error": "Record not found"
+            }
+
+        # =====================================
+        # FIND STATUS ENTRY USING UBID
+        # =====================================
+        status_entry = (
+            db.query(BusinessStatus)
+            .filter(
+                BusinessStatus.ubid == record.ubid
+            )
+            .first()
+        )
+
+        # =====================================
+        # CREATE STATUS IF NOT EXISTS
+        # =====================================
+        if not status_entry:
+
+            status_entry = BusinessStatus(
+
+                ubid=record.ubid,
+
+                status=data.get("status"),
+
+                confidence=record.confidence_score,
+
+                reason="Manually updated"
+
+            )
+
+            db.add(status_entry)
+
+        else:
+
+            # UPDATE EXISTING STATUS
+            status_entry.status = data.get("status")
+
+            status_entry.reason = "Manually updated"
+
+        db.commit()
+
+        db.refresh(status_entry)
+
+        return {
+
+            "message": "Status updated",
+
+            "ubid": record.ubid,
+
+            "status": status_entry.status
+
+        }
+
+    except Exception as e:
+
+        print("STATUS UPDATE ERROR:", str(e))
+
+        return {
+            "error": str(e)
+        }

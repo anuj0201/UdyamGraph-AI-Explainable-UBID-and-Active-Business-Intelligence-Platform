@@ -171,3 +171,47 @@ class MergeHistory(Base):
         DateTime,
         default=datetime.utcnow
     )
+    
+
+class ActivitySignal(Base):
+    __tablename__ = "activity_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    ubid = Column(String)
+
+    signal_type = Column(String)
+    # inspection
+    # renewal
+    # gst_filing
+    # electricity_usage
+    # license_update
+
+    signal_value = Column(String)
+
+    evidence = Column(String)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+    
+    
+class BusinessStatus(Base):
+    __tablename__ = "business_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    ubid = Column(String)
+
+    status = Column(String)
+    # Active / Dormant / Closed
+
+    confidence = Column(Float)
+
+    reason = Column(String)
+
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )

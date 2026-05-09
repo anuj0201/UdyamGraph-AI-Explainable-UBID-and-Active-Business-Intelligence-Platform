@@ -175,9 +175,9 @@ def compute_similarity(r1, r2):
         )
 
     # IMPORTANT:
-    # routes.py expects ONLY:
-    # score, reasons
-    return final_score, reasons
+    # routes.py expects:
+    # score, decision, reasons
+    return final_score, decision, reasons
 
 
 # =========================================

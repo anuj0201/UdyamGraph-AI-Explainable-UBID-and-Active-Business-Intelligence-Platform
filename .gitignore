@@ -1,0 +1,17 @@
+node_modules
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+
+# Node
+node_modules/
+
+# Next.js
+.next/
+
+# Environment variables
+.env

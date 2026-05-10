@@ -63,3 +63,12 @@ The platform also generates explainable reasons for every decision. 🧠
 
 ```bash
 uvicorn app.main:app --reload
+
+##🎨 Frontend
+cd Udyam-Frontend
+npm install
+npm run dev
+
+Frontend runs on:
+
+http://localhost:3000
